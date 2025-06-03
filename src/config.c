@@ -2671,6 +2671,17 @@ void config_init (char *fname, struct audio_s *p_audio_config,
 	  }
 
 
+		else if (strcasecmp(t, "LL2PTX") == 0) {
+			if (channel < 0 || channel >= MAX_RADIO_CHANS) {
+	      text_color_set(DW_COLOR_ERROR);
+	      dw_printf ("Line %d: IL2PTX can only be used with radio channel 0 - %d.\n", line, MAX_RADIO_CHANS-1);
+	      continue;
+	    }
+	    p_audio_config->achan[channel].layer2_xmit = LAYER2_LL2P;
+		}
+
+
+
 /*
  * ==================== APRS Digipeater parameters ====================
  */

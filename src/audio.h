@@ -192,7 +192,7 @@ struct audio_s {
 					/* Might try MFJ-2400 / CCITT v.26 / Bell 201 someday. */
 					/* No modem.  Might want this for DTMF only channel. */
 
-	    enum layer2_t { LAYER2_AX25 = 0, LAYER2_FX25, LAYER2_IL2P } layer2_xmit;	// Must keep in sync with layer2_tx, below.
+	    enum layer2_t { LAYER2_AX25 = 0, LAYER2_FX25, LAYER2_IL2P, LAYER2_LL2P } layer2_xmit;	// Must keep in sync with layer2_tx, below.
 
 					// IL2P - New for version 1.7.
 					// New layer 2 with FEC.  Much less overhead than FX.25 but no longer backward compatible.
