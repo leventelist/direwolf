@@ -45,6 +45,7 @@ static int il2p_generate_crc(unsigned char *coded_crc, unsigned char *payload, i
 
 #define IL2P_NIBLE_MASK 0x0f
 #define IL2P_DECODE_MASK 0x7f
+#define IL2P_CRC_BUFFER_SIZE 2048
 
 // local variables
 
@@ -109,24 +110,31 @@ int il2p_encode_frame (packet_t pp, int max_fec, unsigned char *iout)
 	int out_len = 0;
 	unsigned char crc[IL2P_CODED_CRC_LENGTH];
 	int crc_len;
-	unsigned char *frame_data;
-	int frame_len;
 
+	uint8_t *crc_buffer; // Buffer for CRC, large enough for the largest payload.
+	size_t crc_buffer_data_len;
 
-	frame_len = ax25_get_frame_len(pp);
-	frame_data = ax25_get_frame_data_ptr(pp);
-    crc_len = il2p_generate_crc(crc, frame_data, frame_len);
+	crc_buffer = malloc(IL2P_CRC_BUFFER_SIZE);
+	if (crc_buffer == NULL) {
+		text_color_set(DW_COLOR_ERROR);
+		dw_printf ("IL2P Internal Error: %s(): malloc failed for crc_buffer.\n", __func__);
+		return -1;
+	}
 
 	e = il2p_type_1_header (pp, max_fec, hdr);
 	if (e >= 0) {
+		memcpy (crc_buffer, hdr, IL2P_HEADER_SIZE);
+		crc_buffer_data_len = IL2P_HEADER_SIZE;
 	    il2p_scramble_block (hdr, iout, IL2P_HEADER_SIZE);
 	    il2p_encode_rs (iout, IL2P_HEADER_SIZE, IL2P_HEADER_PARITY, iout+IL2P_HEADER_SIZE);
 	    out_len = IL2P_HEADER_SIZE + IL2P_HEADER_PARITY;
 
 	    if (e == 0) {
+			crc_len = il2p_generate_crc(crc, crc_buffer, crc_buffer_data_len);
 	        // Success. No info part.
             memcpy(iout + out_len, crc, crc_len);
 			out_len += crc_len;
+			free(crc_buffer);
 	        return (out_len);
 	    }
 
@@ -134,17 +142,21 @@ int il2p_encode_frame (packet_t pp, int max_fec, unsigned char *iout)
 	    unsigned char *pinfo;
 	    int info_len;
 	    info_len = ax25_get_info (pp, &pinfo);
-
+		memcpy (crc_buffer + crc_buffer_data_len, pinfo, info_len);
+		crc_buffer_data_len += info_len;
 	    int k = il2p_encode_payload (pinfo, info_len, max_fec, iout+out_len);
 	    if (k > 0) {
 	        out_len += k;
 	        // Success. Info part was <= 1023 bytes.
+			crc_len = il2p_generate_crc(crc, crc_buffer, crc_buffer_data_len);
 			memcpy(iout + out_len, crc, crc_len);
 			out_len += crc_len;
+			free(crc_buffer);
 	        return (out_len);
 	    }
 
 	    // Something went wrong with the payload encoding.
+		free(crc_buffer);
 	    return (-1);
 	}
 	else if (e == -1) {
@@ -154,7 +166,8 @@ int il2p_encode_frame (packet_t pp, int max_fec, unsigned char *iout)
 
 	    e = il2p_type_0_header (pp, max_fec, hdr);
 	    if (e > 0) {
-
+            memcpy (crc_buffer, hdr, IL2P_HEADER_SIZE);
+            crc_buffer_data_len = IL2P_HEADER_SIZE;
 	        il2p_scramble_block (hdr, iout, IL2P_HEADER_SIZE);
 	        il2p_encode_rs (iout, IL2P_HEADER_SIZE, IL2P_HEADER_PARITY, iout+IL2P_HEADER_SIZE);
 	        out_len = IL2P_HEADER_SIZE + IL2P_HEADER_PARITY;
@@ -162,29 +175,36 @@ int il2p_encode_frame (packet_t pp, int max_fec, unsigned char *iout)
 	        // Payload is entire AX.25 frame.
 	        unsigned char *frame_data_ptr = ax25_get_frame_data_ptr (pp);
 	        int frame_len = ax25_get_frame_len (pp);
+			memcpy (crc_buffer + crc_buffer_data_len, frame_data_ptr, frame_len);
+			crc_buffer_data_len += frame_len;
 	        int k = il2p_encode_payload (frame_data_ptr, frame_len, max_fec, iout+out_len);
 	        if (k > 0) {
 	            out_len += k;
 	            // Success. Entire AX.25 frame <= 1023 bytes.
-                crc_len = il2p_generate_crc(crc, frame_data_ptr, frame_len);
+                crc_len = il2p_generate_crc(crc, crc_buffer, crc_buffer_data_len);
 				memcpy(iout + out_len, crc, crc_len);
 				out_len += crc_len;
+				free(crc_buffer);
 	            return (out_len);
 	        }
 	        // Something went wrong with the payload encoding.
+			free(crc_buffer);
 	        return (-1);
 	    }
 	    else if (e == 0) {
 	        // Impossible condition.  Type 0 header must have payload.
+			free(crc_buffer);
 	        return (-1);
 	    }
 	    else {
 	        // AX.25 frame is too large.
+			free(crc_buffer);
 	        return (-1);
 	    }
 	}
 
 	// AX.25 Information part is too large.
+	free(crc_buffer);
 	return (-1);
 }
 
@@ -244,10 +264,21 @@ packet_t il2p_decode_header_payload (unsigned char* uhdr, unsigned char *epayloa
 	int payload_len = il2p_get_header_attributes (uhdr, &hdr_type, &max_fec);
     unsigned char *crc_hdr = epayload; // In case ther's no payload, this is where the CRC is stored.
     int ret;
-	int frame_len;
-	unsigned char *frame_data;
 
 	packet_t pp = NULL;
+
+	uint8_t *crc_buffer; // Buffer for CRC, large enough for the largest payload.
+	size_t crc_buffer_data_len;
+
+	crc_buffer = malloc(IL2P_CRC_BUFFER_SIZE);
+	if (crc_buffer == NULL) {
+		text_color_set(DW_COLOR_ERROR);
+		dw_printf ("IL2P Internal Error: %s(): malloc failed for crc_buffer.\n", __func__);
+		return NULL;
+	}
+
+	memcpy (crc_buffer, uhdr, IL2P_HEADER_SIZE);
+	crc_buffer_data_len = IL2P_HEADER_SIZE;
 
 	if (hdr_type == 1) {
 
@@ -256,6 +287,7 @@ packet_t il2p_decode_header_payload (unsigned char* uhdr, unsigned char *epayloa
 	    pp = il2p_decode_header_type_1 (uhdr, *symbols_corrected);
 	    if (pp == NULL) {
 	        // Failed for some reason.
+			free(crc_buffer);
 	        return (NULL);
 	    }
 
@@ -270,24 +302,26 @@ packet_t il2p_decode_header_payload (unsigned char* uhdr, unsigned char *epayloa
 	        if (e <= 0) {
 	            ax25_delete (pp);
 	            pp = NULL;
+				free(crc_buffer);
 	            return (pp);
 	        }
 		      if (e != payload_len) {
 	            text_color_set(DW_COLOR_ERROR);
 	            dw_printf ("IL2P Internal Error: %s(): hdr_type=%d, max_fec=%d, payload_len=%d, e=%d.\n", __func__, hdr_type, max_fec, payload_len, e);
 	        }
+            memcpy (crc_buffer + crc_buffer_data_len, extracted, payload_len);
+			crc_buffer_data_len += payload_len;
 	        ax25_set_info (pp, extracted, payload_len);
 	    }
 	    // Check CRC if requested.
 		if (use_crc == IL2P_USECRC) {
-			frame_len = ax25_get_frame_len(pp);
-			frame_data = ax25_get_frame_data_ptr(pp);
-			ret = il2p_check_crc(frame_data, frame_len, crc_hdr);
+			ret = il2p_check_crc(crc_buffer, crc_buffer_data_len, crc_hdr);
 			if (ret < 0) {
 	            ax25_delete (pp);
 	            pp = NULL;
 	    	}
 		}
+		free(crc_buffer);
 	    return (pp);
 	}
 	else {
@@ -298,11 +332,13 @@ packet_t il2p_decode_header_payload (unsigned char* uhdr, unsigned char *epayloa
 	    int e = il2p_decode_payload (epayload, payload_len, max_fec, extracted, symbols_corrected, &crc_hdr);
 
 	    if (e <= 0) {	// Payload was not received correctly.
+			free(crc_buffer);
 	        return (NULL);
 	    }
 	    if (e != payload_len) {
 	        text_color_set(DW_COLOR_ERROR);
 	        dw_printf ("IL2P Internal Error: %s(): hdr_type=%d, e=%d, payload_len=%d\n", __func__, hdr_type, e, payload_len);
+			free(crc_buffer);
 	        return (NULL);
 	    }
 
@@ -314,14 +350,15 @@ packet_t il2p_decode_header_payload (unsigned char* uhdr, unsigned char *epayloa
 
 	    pp = ax25_from_frame (extracted, payload_len, alevel);
 		if (use_crc) {
-			frame_len = payload_len;
-			frame_data = extracted;
-			ret = il2p_check_crc(frame_data, frame_len, crc_hdr);
+			memcpy (crc_buffer + crc_buffer_data_len, extracted, payload_len);
+			crc_buffer_data_len += payload_len;
+			ret = il2p_check_crc(crc_buffer, crc_buffer_data_len, crc_hdr);
 			if (ret < 0) {
     	        ax25_delete (pp);
 	            pp = NULL;
 	        }
 		}
+		free(crc_buffer);
 	    return (pp);
 	}
 
